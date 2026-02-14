@@ -34,12 +34,6 @@
 <!-- Task logic -->
 <script>
 // Meta-Emotion Task (jsPsych 7) — CSV-driven
-// Repo structure expected:
-//   index.html
-//   experiment.js
-//   lists/ practice_pairs.csv, calibration_pairs.csv, review_list.csv, meta_list.csv
-//   stimuli/ practice/<images>, formal/<images>
-//   assets/ <instruction images>
 
 // ----------------------------
 // Config (timings mirror Matlab scripts)
@@ -194,8 +188,8 @@ function parseSingleColumnCSV(csvText) {
 function fixationTrial(ms){
   return {
     type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div class="fixation">+</div>`,
     choices: "NO_KEYS",
+    stimulus: `<div class="fixation">+</div>`,
     trial_duration: ms,
     data: {event: "fixation", duration_ms: ms}
   };
