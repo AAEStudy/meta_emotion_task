@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Meta-Emotion Task</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- jsPsych v7 -->
+  <link href="https://unpkg.com/jspsych@7.3.4/css/jspsych.css" rel="stylesheet" />
+  <script src="https://unpkg.com/jspsych@7.3.4"></script>
+
+  <!-- Plugins -->
+  <script src="https://unpkg.com/@jspsych/plugin-preload@1.1.3"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@1.1.3"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-image-keyboard-response@1.1.3"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@1.1.3"></script>
+
+  <style>
+    body { background: black; }
+    .fixation { color: white; font-size: 64px; text-align:center; }
+    .center { color: white; text-align: center; }
+  </style>
+</head>
+<body></body>
+
+<!-- Task logic -->
+<script>
+// Meta-Emotion Task (jsPsych 7) — CSV-driven
+// Repo structure expected:
+//   index.html
+//   experiment.js
+//   lists/ practice_pairs.csv, calibration_pairs.csv, review_list.csv, meta_list.csv
+//   stimuli/ practice/<images>, formal/<images>
+//   assets/ <instruction images>
+
+// ----------------------------
+// Config (timings mirror Matlab scripts)
+// ----------------------------
+const TIMING = {
+  pic_ms: 500,      // picture duration in 2IFC + meta
+  fix_ms: 500,      // fixation duration
+  iti_ms: 500,      // inter-trial interval
+  review_ms: 1000   // review picture duration
+};
+
+const KEYS = {
+  start: [" "],                 // space
+  choice12: ["1", "2"],         // 1/2 keys
+  conf1234: ["1", "2", "3", "4"]// confidence
+};
+
+// Adjust these folders if you change your repo structure
+const PATHS = {
+  assets: "assets/",
+  practice: "stimuli/practice/",
+  formal: "stimuli/formal/",
+  lists: "lists/"
+};
+
+// ----------------------------
+// CSV loading + parsing helpers
+// ----------------------------
+async function loadCSV(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`Failed to load CSV: ${url}`);
+  const text = await r.text();
+  // normalize newlines + remove BOM if present
+  return text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+// Minimal CSV parser (handles quoted cells + commas inside quotes)
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+
+    if (c === '"' && inQuotes && next === '"') { // escaped quote
+      cell += '"';
+      i++;
+    } else if (c === '"') {
+      inQuotes = !inQuotes;
+    } else if (c === "," && !inQuotes) {
+      row.push(cell);
+      cell = "";
+    } else if (c === "\n" && !inQuotes) {
+      row.push(cell);
+      cell = "";
+      if (row.some(v => String(v).trim().length > 0)) rows.push(row.map(v => String(v)));
+      row = [];
+    } else {
+      cell += c;
+    }
+  }
+  row.push(cell);
+  if (row.some(v => String(v).trim().length > 0)) rows.push(row.map(v => String(v)));
+  return rows;
+}
+
+function rowsToObjects(rows) {
+  if (rows.length < 2) return [];
+  const header = rows[0].map(h => String(h).trim());
+  return rows.slice(1).map(r => {
+    const obj = {};
+    header.forEach((h, i) => obj[h] = String(r[i] ?? "").trim());
+    return obj;
+  }).filter(o => Object.values(o).some(v => String(v).trim().length > 0));
+}
+
+// If Excel exported full relative paths, keep only filename
+function basenameMaybe(x) {
+  const s = String(x || "").trim();
+  if (!s) return s;
+  const parts = s.split(/[/\\]/);
+  return parts[parts.length - 1].trim();
+}
+
+// For pair lists: expects columns like p1,p2 (or img1,img2)
+function parsePairsCSV(csvText) {
+  const rows = parseCSV(csvText);
+  const objs = rowsToObjects(rows);
+  if (objs.length === 0) return [];
+
+  const p1Key = ["p1", "img1", "image1", "pic1", "stim1"].find(k => k in objs[0]);
+  const p2Key = ["p2", "img2", "image2", "pic2", "stim2"].find(k => k in objs[0]);
+  if (!p1Key || !p2Key) {
+    throw new Error(`Pair CSV must have headers like p1,p2 (or img1,img2). Found: ${rows[0].join(", ")}`);
+  }
+
+  return objs.map(o => ({ p1: basenameMaybe(o[p1Key]), p2: basenameMaybe(o[p2Key]) }))
+             .filter(t => t.p1 && t.p2);
+}
+
+// For single-column lists: expects a column like img OR uses first column
+function parseSingleColumnCSV(csvText) {
+  const rows = parseCSV(csvText);
+  if (rows.length < 2) return [];
+
+  const header = rows[0].map(h => String(h).trim());
+  const colKey = ["img", "image", "pic", "stim", "filename", "file"].find(k => header.includes(k));
+  const colIndex = colKey ? header.indexOf(colKey) : 0;
+
+  return rows.slice(1)
+    .map(r => basenameMaybe(r[colIndex]))
+    .filter(v => String(v).trim().length > 0);
+}
+
+// ----------------------------
+// Trial builders
+// ----------------------------
+function fixationTrial(ms){
+  return {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="fixation">+</div>`,
+    choices: "NO_KEYS",
+    trial_duration: ms,
+    data: {event: "fixation", duration_ms: ms}
+  };
+}
+
+function blankITI(ms){
+  return {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div></div>`,
+    choices: "NO_KEYS",
+    trial_duration: ms,
+    data: {event: "iti", duration_ms: ms}
+  };
+}
+
+function imagePassive(stimulus, ms, extraData={}){
+  return {
+    type: jsPsychImageKeyboardResponse,
+    stimulus,
+    choices: "NO_KEYS",
+    trial_duration: ms,
+    data: {event: "image_passive", stimulus, duration_ms: ms, ...extraData}
+  };
+}
+
+function htmlImageScreen(path, tag){
+  return {
+    type: jsPsychImageKeyboardResponse,
+    stimulus: path,
+    choices: KEYS.start,
+    data: {event: tag}
+  };
+}
+
+function buildTwoIntervalTrial(pic1, pic2, blockName){
+  return {
+    timeline: [
+      imagePassive(pic1, TIMING.pic_ms, {block: blockName, phase: "interval1"}),
+      fixationTrial(TIMING.fix_ms),
+      imagePassive(pic2, TIMING.pic_ms, {block: blockName, phase: "interval2"}),
+      fixationTrial(TIMING.fix_ms),
+      {
+        type: jsPsychHtmlKeyboardResponse,
+        stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
+                    Which picture elicited stronger <b>positive emotion</b>?<br><br>
+                    Press <b>1</b> for the FIRST picture, <b>2</b> for the SECOND picture.
+                  </div>`,
+        choices: KEYS.choice12,
+        data: {event: "2ifc_response", block: blockName, pic1, pic2},
+        on_finish: (data) => {
+          data.choice_key = data.response; // "1" or "2"
+          data.chosen = (data.response === "1") ? pic1 : pic2;
+          data.rt_ms = data.rt;
+        }
+      },
+      blankITI(TIMING.iti_ms)
+    ]
+  };
+}
+
+function buildMetaJudgmentTrial(pic, blockName){
+  return {
+    timeline: [
+      imagePassive(pic, TIMING.pic_ms, {block: blockName, phase: "stimulus"}),
+      fixationTrial(TIMING.fix_ms),
+      {
+        type: jsPsychHtmlKeyboardResponse,
+        stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
+          Compared to the <b>median</b> of the whole picture set,<br>
+          did this picture induce <b>higher</b> or <b>lower</b> positive emotion?<br><br>
+          Press <b>1</b> = Higher, <b>2</b> = Lower
+        </div>`,
+        choices: KEYS.choice12,
+        data: {event: "meta_type1", block: blockName, pic},
+        on_finish: (data) => { data.type1_key = data.response; data.type1_rt_ms = data.rt; }
+      },
+      {
+        type: jsPsychHtmlKeyboardResponse,
+        stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
+          Confidence (1 = very unconfident … 4 = very confident)<br><br>
+          Press <b>1</b> / <b>2</b> / <b>3</b> / <b>4</b>
+        </div>`,
+        choices: KEYS.conf1234,
+        data: {event: "meta_conf", block: blockName, pic},
+        on_finish: (data) => { data.conf_key = data.response; data.conf_rt_ms = data.rt; }
+      },
+      blankITI(TIMING.iti_ms)
+    ]
+  };
+}
+
+// ----------------------------
+// Main run
+// ----------------------------
+(async function run(){
+
+  const jsPsych = initJsPsych({
+    on_finish: () => {
+      // Works on GitHub Pages: downloads the CSV to the participant's computer
+      jsPsych.data.get().localSave("csv", "meta_emotion_data.csv");
+    }
+  });
+
+  const timeline = [];
+
+  // Participant info (simple replacement for Matlab inputdlg)
+  timeline.push({
+    type: jsPsychSurveyHtmlForm,
+    html: `
+      <div class="center" style="font-size:22px; max-width:720px; margin: 0 auto; line-height:1.35;">
+        <p><b>Participant Info</b></p>
+        <p><label>Subject ID: <input name="subject" required></label></p>
+        <p><label>Gender (1=male, 2=female): <input name="gender" required></label></p>
+        <p><label>Age: <input name="age" required></label></p>
+        <p><input type="submit" value="Continue"></p>
+      </div>
+    `,
+    on_finish: (data) => {
+      const resp = data.response;
+      jsPsych.data.addProperties({
+        subject: resp.subject,
+        gender: resp.gender,
+        age: resp.age
+      });
+    }
+  });
+
+  // Load CSV lists
+  const practiceCSV = await loadCSV(PATHS.lists + "practice_pairs.csv");
+  const calibrationCSV = await loadCSV(PATHS.lists + "calibration_pairs.csv");
+  const reviewCSV = await loadCSV(PATHS.lists + "review_list.csv");
+  const metaCSV = await loadCSV(PATHS.lists + "meta_list.csv");
+
+  const practicePairs = parsePairsCSV(practiceCSV);
+  const calibrationPairs = parsePairsCSV(calibrationCSV);
+  const reviewList = parseSingleColumnCSV(reviewCSV);
+  const metaList = parseSingleColumnCSV(metaCSV);
+
+  console.log("practicePairs", practicePairs.length);
+  console.log("calibrationPairs", calibrationPairs.length);
+  console.log("reviewList", reviewList.length);
+  console.log("metaList", metaList.length);
+
+  // Build full image paths for preloading and trial building
+  const practiceImgs = practicePairs.flatMap(t => [PATHS.practice + t.p1, PATHS.practice + t.p2]);
+  const calibrationImgs = calibrationPairs.flatMap(t => [PATHS.formal + t.p1, PATHS.formal + t.p2]);
+  const reviewImgs = reviewList.map(x => PATHS.formal + x);
+  const metaImgs = metaList.map(x => PATHS.formal + x);
+
+  // Instruction / screen images (adjust filenames if yours differ)
+  const assetImgs = [
+    "instruction_prac.jpg",
+    "endx_prac.jpg",
+    "instruction.jpg",
+    "restx.jpg",
+    "instruction2.jpg"
+  ].map(x => PATHS.assets + x);
+
+  // Preload everything we can
+  const allToPreload = [...new Set([...practiceImgs, ...calibrationImgs, ...reviewImgs, ...metaImgs, ...assetImgs])];
+
+  timeline.push({
+    type: jsPsychPreload,
+    images: allToPreload,
+    show_progress_bar: true
+  });
+
+  // ---------------- Practice ----------------
+  timeline.push(htmlImageScreen(PATHS.assets + "instruction_prac.jpg", "practice_instructions"));
+
+  practicePairs.forEach((t) => {
+    timeline.push(buildTwoIntervalTrial(PATHS.practice + t.p1, PATHS.practice + t.p2, "practice"));
+  });
+
+  timeline.push(htmlImageScreen(PATHS.assets + "endx_prac.jpg", "practice_end"));
+
+  // ---------------- Calibration ----------------
+  timeline.push(htmlImageScreen(PATHS.assets + "instruction.jpg", "calibration_instructions"));
+
+  const REST_EVERY = 38; // matches Matlab pattern (every 38 trials)
+
+  calibrationPairs.forEach((t, idx) => {
+    timeline.push(buildTwoIntervalTrial(PATHS.formal + t.p1, PATHS.formal + t.p2, "calibration"));
+
+    if ((idx + 1) % REST_EVERY === 0 && (idx + 1) < calibrationPairs.length) {
+      timeline.push({
+        type: jsPsychImageKeyboardResponse,
+        stimulus: PATHS.assets + "restx.jpg",
+        choices: KEYS.start,
+        data: {event: "rest_screen", block: "calibration", after_trial: idx + 1}
+      });
+    }
+  });
+
+  // ---------------- Review ----------------
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="center" style="font-size:24px; line-height:1.35;">
+      Next, you will re-view all pictures.<br><br>
+      Press <b>SPACE</b> to begin.
+    </div>`,
+    choices: KEYS.start,
+    data: {event: "review_instructions"}
+  });
+
+  reviewImgs.forEach((img) => {
+    timeline.push(imagePassive(img, TIMING.review_ms, {block: "review"}));
+  });
+
+  // ---------------- Meta-judgment ----------------
+  timeline.push(htmlImageScreen(PATHS.assets + "instruction2.jpg", "meta_instructions"));
+
+  metaImgs.forEach((img) => {
+    timeline.push(buildMetaJudgmentTrial(img, "meta"));
+  });
+
+  // End
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
+      Finished. Thank you!<br><br>
+      Your data will download automatically.
+    </div>`,
+    choices: "NO_KEYS",
+    trial_duration: 1500,
+    data: {event: "end"}
+  });
+
+  jsPsych.run(timeline);
+})();
+</script>
+</html>
