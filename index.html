@@ -33,6 +33,10 @@
 
 <!-- Task logic -->
 <script>
+// Debug: Check what plugins are loaded
+console.log("Checking loaded plugins...");
+console.log("Available globals:", Object.keys(window).filter(k => k.toLowerCase().includes('jspsych')));
+
 // Meta-Emotion Task (jsPsych 7) — CSV-driven
 
 // ----------------------------
@@ -70,6 +74,10 @@ function showError(message, error) {
       <p><strong>${message}</strong></p>
       <p style="color: #ff6b6b;">${error?.message || error}</p>
       <hr style="margin: 20px 0;">
+      <p style="font-size: 14px; text-align: left;">
+        <strong>Debug info:</strong><br>
+        Available plugins: ${Object.keys(window).filter(k => k.toLowerCase().includes('jspsych')).join(', ')}
+      </p>
       <p style="font-size: 14px; text-align: left;">
         <strong>Troubleshooting steps:</strong><br>
         1. Open browser console (F12) to see detailed errors<br>
@@ -188,8 +196,8 @@ function parseSingleColumnCSV(csvText) {
 function fixationTrial(ms){
   return {
     type: jsPsychHtmlKeyboardResponse,
-    choices: "NO_KEYS",
     stimulus: `<div class="fixation">+</div>`,
+    choices: "NO_KEYS",
     trial_duration: ms,
     data: {event: "fixation", duration_ms: ms}
   };
@@ -297,25 +305,50 @@ function buildMetaJudgmentTrial(pic, blockName){
 
     const timeline = [];
 
-    // Participant info (simple replacement for Matlab inputdlg)
+    // Participant info - using html-keyboard-response as fallback
     timeline.push({
-      type: jsPsychSurveyHtmlForm,
-      html: `
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `
         <div class="center" style="font-size:22px; max-width:720px; margin: 0 auto; line-height:1.35;">
           <p><b>Participant Info</b></p>
-          <p><label>Subject ID: <input name="subject" required></label></p>
-          <p><label>Gender (1=male, 2=female): <input name="gender" required></label></p>
-          <p><label>Age: <input name="age" required></label></p>
-          <p><input type="submit" value="Continue"></p>
+          <form id="participant-form" style="text-align: left;">
+            <p><label>Subject ID: <input id="subject" name="subject" required></label></p>
+            <p><label>Gender (1=male, 2=female): <input id="gender" name="gender" required></label></p>
+            <p><label>Age: <input id="age" name="age" required></label></p>
+            <p><button type="submit">Continue (or press SPACE)</button></p>
+          </form>
         </div>
       `,
-      on_finish: (data) => {
-        const resp = data.response;
-        jsPsych.data.addProperties({
-          subject: resp.subject,
-          gender: resp.gender,
-          age: resp.age
+      choices: [" "],
+      on_load: () => {
+        const form = document.getElementById('participant-form');
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const subject = document.getElementById('subject').value;
+          const gender = document.getElementById('gender').value;
+          const age = document.getElementById('age').value;
+          
+          if (subject && gender && age) {
+            jsPsych.data.addProperties({ subject, gender, age });
+            jsPsych.finishTrial();
+          }
         });
+      },
+      on_finish: (data) => {
+        // Also capture if they pressed space
+        if (data.response === ' ') {
+          const subject = document.getElementById('subject').value;
+          const gender = document.getElementById('gender').value;
+          const age = document.getElementById('age').value;
+          
+          if (subject && gender && age) {
+            jsPsych.data.addProperties({ subject, gender, age });
+          } else {
+            alert('Please fill in all fields');
+            // Restart this trial
+            return false;
+          }
+        }
       }
     });
 
