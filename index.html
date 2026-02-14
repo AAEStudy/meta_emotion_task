@@ -16,9 +16,17 @@
   <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@1.1.3"></script>
 
   <style>
-    body { background: black; }
+    body { background: black; color: white; }
     .fixation { color: white; font-size: 64px; text-align:center; }
     .center { color: white; text-align: center; }
+    .error-screen { 
+      color: white; 
+      padding: 40px; 
+      text-align: center; 
+      font-family: monospace;
+      max-width: 800px;
+      margin: 0 auto;
+    }
   </style>
 </head>
 <body></body>
@@ -58,14 +66,45 @@ const PATHS = {
 };
 
 // ----------------------------
+// Error handling
+// ----------------------------
+function showError(message, error) {
+  console.error(message, error);
+  document.body.innerHTML = `
+    <div class="error-screen">
+      <h2>⚠️ Error Loading Experiment</h2>
+      <p><strong>${message}</strong></p>
+      <p style="color: #ff6b6b;">${error?.message || error}</p>
+      <hr style="margin: 20px 0;">
+      <p style="font-size: 14px; text-align: left;">
+        <strong>Troubleshooting steps:</strong><br>
+        1. Open browser console (F12) to see detailed errors<br>
+        2. Check that all CSV files exist in the 'lists/' folder<br>
+        3. Verify CSV files are properly formatted<br>
+        4. Ensure GitHub Pages is enabled for this repository<br>
+        5. Check that files are on the correct branch (main/gh-pages)
+      </p>
+    </div>
+  `;
+}
+
+// ----------------------------
 // CSV loading + parsing helpers
 // ----------------------------
 async function loadCSV(url) {
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`Failed to load CSV: ${url}`);
-  const text = await r.text();
-  // normalize newlines + remove BOM if present
-  return text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  try {
+    console.log(`Loading CSV: ${url}`);
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}: ${r.statusText} - Failed to load ${url}`);
+    }
+    const text = await r.text();
+    console.log(`✓ Loaded ${url} (${text.length} bytes)`);
+    // normalize newlines + remove BOM if present
+    return text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  } catch (err) {
+    throw new Error(`Failed to load CSV from ${url}: ${err.message}`);
+  }
 }
 
 // Minimal CSV parser (handles quoted cells + commas inside quotes)
@@ -252,140 +291,167 @@ function buildMetaJudgmentTrial(pic, blockName){
 // Main run
 // ----------------------------
 (async function run(){
+  try {
+    console.log("Starting experiment initialization...");
 
-  const jsPsych = initJsPsych({
-    on_finish: () => {
-      // Works on GitHub Pages: downloads the CSV to the participant's computer
-      jsPsych.data.get().localSave("csv", "meta_emotion_data.csv");
-    }
-  });
+    const jsPsych = initJsPsych({
+      on_finish: () => {
+        // Works on GitHub Pages: downloads the CSV to the participant's computer
+        jsPsych.data.get().localSave("csv", "meta_emotion_data.csv");
+      }
+    });
 
-  const timeline = [];
+    const timeline = [];
 
-  // Participant info (simple replacement for Matlab inputdlg)
-  timeline.push({
-    type: jsPsychSurveyHtmlForm,
-    html: `
-      <div class="center" style="font-size:22px; max-width:720px; margin: 0 auto; line-height:1.35;">
-        <p><b>Participant Info</b></p>
-        <p><label>Subject ID: <input name="subject" required></label></p>
-        <p><label>Gender (1=male, 2=female): <input name="gender" required></label></p>
-        <p><label>Age: <input name="age" required></label></p>
-        <p><input type="submit" value="Continue"></p>
-      </div>
-    `,
-    on_finish: (data) => {
-      const resp = data.response;
-      jsPsych.data.addProperties({
-        subject: resp.subject,
-        gender: resp.gender,
-        age: resp.age
-      });
-    }
-  });
+    // Participant info (simple replacement for Matlab inputdlg)
+    timeline.push({
+      type: jsPsychSurveyHtmlForm,
+      html: `
+        <div class="center" style="font-size:22px; max-width:720px; margin: 0 auto; line-height:1.35;">
+          <p><b>Participant Info</b></p>
+          <p><label>Subject ID: <input name="subject" required></label></p>
+          <p><label>Gender (1=male, 2=female): <input name="gender" required></label></p>
+          <p><label>Age: <input name="age" required></label></p>
+          <p><input type="submit" value="Continue"></p>
+        </div>
+      `,
+      on_finish: (data) => {
+        const resp = data.response;
+        jsPsych.data.addProperties({
+          subject: resp.subject,
+          gender: resp.gender,
+          age: resp.age
+        });
+      }
+    });
 
-  // Load CSV lists
-  const practiceCSV = await loadCSV(PATHS.lists + "practice_pairs.csv");
-  const calibrationCSV = await loadCSV(PATHS.lists + "calibration_pairs.csv");
-  const reviewCSV = await loadCSV(PATHS.lists + "review_list.csv");
-  const metaCSV = await loadCSV(PATHS.lists + "meta_list.csv");
+    // Load CSV lists
+    console.log("Loading CSV files...");
+    const practiceCSV = await loadCSV(PATHS.lists + "practice_pairs.csv");
+    const calibrationCSV = await loadCSV(PATHS.lists + "calibration_pairs.csv");
+    const reviewCSV = await loadCSV(PATHS.lists + "review_list.csv");
+    const metaCSV = await loadCSV(PATHS.lists + "meta_list.csv");
 
-  const practicePairs = parsePairsCSV(practiceCSV);
-  const calibrationPairs = parsePairsCSV(calibrationCSV);
-  const reviewList = parseSingleColumnCSV(reviewCSV);
-  const metaList = parseSingleColumnCSV(metaCSV);
+    console.log("Parsing CSV files...");
+    const practicePairs = parsePairsCSV(practiceCSV);
+    const calibrationPairs = parsePairsCSV(calibrationCSV);
+    const reviewList = parseSingleColumnCSV(reviewCSV);
+    const metaList = parseSingleColumnCSV(metaCSV);
 
-  console.log("practicePairs", practicePairs.length);
-  console.log("calibrationPairs", calibrationPairs.length);
-  console.log("reviewList", reviewList.length);
-  console.log("metaList", metaList.length);
+    console.log("✓ practicePairs:", practicePairs.length);
+    console.log("✓ calibrationPairs:", calibrationPairs.length);
+    console.log("✓ reviewList:", reviewList.length);
+    console.log("✓ metaList:", metaList.length);
 
-  // Build full image paths for preloading and trial building
-  const practiceImgs = practicePairs.flatMap(t => [PATHS.practice + t.p1, PATHS.practice + t.p2]);
-  const calibrationImgs = calibrationPairs.flatMap(t => [PATHS.formal + t.p1, PATHS.formal + t.p2]);
-  const reviewImgs = reviewList.map(x => PATHS.formal + x);
-  const metaImgs = metaList.map(x => PATHS.formal + x);
+    // Build full image paths for preloading and trial building
+    const practiceImgs = practicePairs.flatMap(t => [PATHS.practice + t.p1, PATHS.practice + t.p2]);
+    const calibrationImgs = calibrationPairs.flatMap(t => [PATHS.formal + t.p1, PATHS.formal + t.p2]);
+    const reviewImgs = reviewList.map(x => PATHS.formal + x);
+    const metaImgs = metaList.map(x => PATHS.formal + x);
 
-  // Instruction / screen images (adjust filenames if yours differ)
-  const assetImgs = [
-    "instruction_prac.jpg",
-    "endx_prac.jpg",
-    "instruction.jpg",
-    "restx.jpg",
-    "instruction2.jpg"
-  ].map(x => PATHS.assets + x);
+    // Instruction / screen images (adjust filenames if yours differ)
+    const assetImgs = [
+      "instruction_prac.jpg",
+      "endx_prac.jpg",
+      "instruction.jpg",
+      "restx.jpg",
+      "instruction2.jpg"
+    ].map(x => PATHS.assets + x);
 
-  // Preload everything we can
-  const allToPreload = [...new Set([...practiceImgs, ...calibrationImgs, ...reviewImgs, ...metaImgs, ...assetImgs])];
+    // Preload everything we can
+    const allToPreload = [...new Set([...practiceImgs, ...calibrationImgs, ...reviewImgs, ...metaImgs, ...assetImgs])];
 
-  timeline.push({
-    type: jsPsychPreload,
-    images: allToPreload,
-    show_progress_bar: true
-  });
+    console.log("Preloading", allToPreload.length, "files...");
 
-  // ---------------- Practice ----------------
-  timeline.push(htmlImageScreen(PATHS.assets + "instruction_prac.jpg", "practice_instructions"));
+    timeline.push({
+      type: jsPsychPreload,
+      images: allToPreload,
+      show_progress_bar: true,
+      on_error: (file) => {
+        console.warn(`Failed to preload: ${file}`);
+      },
+      on_success: () => {
+        console.log("✓ Preloading complete");
+      }
+    });
 
-  practicePairs.forEach((t) => {
-    timeline.push(buildTwoIntervalTrial(PATHS.practice + t.p1, PATHS.practice + t.p2, "practice"));
-  });
+    // ---------------- Practice ----------------
+    timeline.push(htmlImageScreen(PATHS.assets + "instruction_prac.jpg", "practice_instructions"));
 
-  timeline.push(htmlImageScreen(PATHS.assets + "endx_prac.jpg", "practice_end"));
+    practicePairs.forEach((t) => {
+      timeline.push(buildTwoIntervalTrial(PATHS.practice + t.p1, PATHS.practice + t.p2, "practice"));
+    });
 
-  // ---------------- Calibration ----------------
-  timeline.push(htmlImageScreen(PATHS.assets + "instruction.jpg", "calibration_instructions"));
+    timeline.push(htmlImageScreen(PATHS.assets + "endx_prac.jpg", "practice_end"));
 
-  const REST_EVERY = 38; // matches Matlab pattern (every 38 trials)
+    // ---------------- Calibration ----------------
+    timeline.push(htmlImageScreen(PATHS.assets + "instruction.jpg", "calibration_instructions"));
 
-  calibrationPairs.forEach((t, idx) => {
-    timeline.push(buildTwoIntervalTrial(PATHS.formal + t.p1, PATHS.formal + t.p2, "calibration"));
+    const REST_EVERY = 38; // matches Matlab pattern (every 38 trials)
 
-    if ((idx + 1) % REST_EVERY === 0 && (idx + 1) < calibrationPairs.length) {
-      timeline.push({
-        type: jsPsychImageKeyboardResponse,
-        stimulus: PATHS.assets + "restx.jpg",
-        choices: KEYS.start,
-        data: {event: "rest_screen", block: "calibration", after_trial: idx + 1}
-      });
-    }
-  });
+    calibrationPairs.forEach((t, idx) => {
+      timeline.push(buildTwoIntervalTrial(PATHS.formal + t.p1, PATHS.formal + t.p2, "calibration"));
 
-  // ---------------- Review ----------------
-  timeline.push({
-    type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div class="center" style="font-size:24px; line-height:1.35;">
-      Next, you will re-view all pictures.<br><br>
-      Press <b>SPACE</b> to begin.
-    </div>`,
-    choices: KEYS.start,
-    data: {event: "review_instructions"}
-  });
+      if ((idx + 1) % REST_EVERY === 0 && (idx + 1) < calibrationPairs.length) {
+        timeline.push({
+          type: jsPsychImageKeyboardResponse,
+          stimulus: PATHS.assets + "restx.jpg",
+          choices: KEYS.start,
+          data: {event: "rest_screen", block: "calibration", after_trial: idx + 1}
+        });
+      }
+    });
 
-  reviewImgs.forEach((img) => {
-    timeline.push(imagePassive(img, TIMING.review_ms, {block: "review"}));
-  });
+    // ---------------- Review ----------------
+    timeline.push({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div class="center" style="font-size:24px; line-height:1.35;">
+        Next, you will re-view all pictures.<br><br>
+        Press <b>SPACE</b> to begin.
+      </div>`,
+      choices: KEYS.start,
+      data: {event: "review_instructions"}
+    });
 
-  // ---------------- Meta-judgment ----------------
-  timeline.push(htmlImageScreen(PATHS.assets + "instruction2.jpg", "meta_instructions"));
+    reviewImgs.forEach((img) => {
+      timeline.push(imagePassive(img, TIMING.review_ms, {block: "review"}));
+    });
 
-  metaImgs.forEach((img) => {
-    timeline.push(buildMetaJudgmentTrial(img, "meta"));
-  });
+    // ---------------- Meta-judgment ----------------
+    timeline.push(htmlImageScreen(PATHS.assets + "instruction2.jpg", "meta_instructions"));
 
-  // End
-  timeline.push({
-    type: jsPsychHtmlKeyboardResponse,
-    stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
-      Finished. Thank you!<br><br>
-      Your data will download automatically.
-    </div>`,
-    choices: "NO_KEYS",
-    trial_duration: 1500,
-    data: {event: "end"}
-  });
+    metaImgs.forEach((img) => {
+      timeline.push(buildMetaJudgmentTrial(img, "meta"));
+    });
 
-  jsPsych.run(timeline);
+    // End
+    timeline.push({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div class="center" style="font-size:28px; line-height:1.35;">
+        Finished. Thank you!<br><br>
+        Your data will download automatically.
+      </div>`,
+      choices: "NO_KEYS",
+      trial_duration: 1500,
+      data: {event: "end"}
+    });
+
+    console.log("Starting jsPsych with", timeline.length, "timeline nodes...");
+    jsPsych.run(timeline);
+
+  } catch (error) {
+    showError("Failed to initialize experiment", error);
+  }
 })();
+
+// Global error handler
+window.addEventListener('error', (event) => {
+  console.error('Global error:', event.error);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+  showError("Unhandled error during experiment initialization", event.reason);
+});
 </script>
 </html>
